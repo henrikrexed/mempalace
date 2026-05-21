@@ -2444,8 +2444,16 @@ def handle_request(request):
                     "error": {"code": -32602, "message": f"Invalid value for parameter '{key}'"},
                 }
         tool_args.pop("wait_for_previous", None)
+        # Telemetry: emit a memory-semconv ``memory.<op>`` span around the
+        # handler call. No-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset
+        # (see ``mempalace.telemetry``). Argument values are NEVER attached
+        # to the span — only the tool name and operation kind — to keep
+        # raw memory content out of the trace pipeline.
+        from .telemetry import memory_operation
+
         try:
-            result = TOOLS[tool_name]["handler"](**tool_args)
+            with memory_operation(tool_name):
+                result = TOOLS[tool_name]["handler"](**tool_args)
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
@@ -2717,6 +2725,15 @@ def main():
             except (AttributeError, OSError):
                 pass
     logger.info("MemPalace MCP Server starting...")
+    # Opt-in OpenTelemetry — no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set
+    # AND the [observability] extra is installed.
+    try:
+        from .telemetry import init_telemetry
+
+        init_telemetry()
+    except Exception:
+        # Telemetry must never block server startup.
+        logger.debug("telemetry: init_telemetry raised", exc_info=True)
     # Pre-flight: probe HNSW capacity before any tool call so the warning
     # is visible at startup rather than on first use (#1222). Pure
     # filesystem read; never opens a chromadb client.
